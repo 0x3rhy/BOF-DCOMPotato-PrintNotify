@@ -8,7 +8,14 @@ By default, [ImpersonationLevel](https://learn.microsoft.com/en-us/windows/win32
 HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Svchost\print
 ````
 
+### Support
 
+- Support mingw-w64 compiler
+- Support CobaltStrike 4.5
+
+### Demo
+
+![image-20240204151456847](img/image-201.png)
 
 ### Usage
 
@@ -46,8 +53,9 @@ DCOMPotato --pmode 3
 
 ### Compile
 
-```
-cl /c /GS- /FoDCOMPotato.x64.o /TP DCOMPotato.cpp
+```sh
+sudo apt install gcc-mingw-w64-x86-64 -y
+make
 ```
 
 
